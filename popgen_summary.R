@@ -5,6 +5,7 @@ suppressPackageStartupMessages({
   library(stringr)
 })
 
+## Input and output paths
 ploidy <- "ta"  # da or ta; statistic files are selected explicitly below
 candidate_file <- sprintf("results/candidate_coordinates/%s_candidate_coordinates.tsv", ploidy)
 ploidy_x <- if (ploidy == "da") "2x" else "4x"
@@ -14,6 +15,7 @@ taj_file <- sprintf("data/aa_bt_1kb_mask_%s_tajima_d.txt", ploidy_x)
 fst_file <- sprintf("data/aa_bt_1kb_mask_%s_fst.txt", ploidy_x)
 out_dir <- file.path("results/local_sweeps", ploidy_x)
 
+#Set parameters
 pad_bp <- 50000
 gene_buffer_bp <- 2000
 min_windows_gene <- 3
@@ -33,6 +35,7 @@ if (anyNA(genes) || any(genes$gene_start < 1 | genes$gene_end < genes$gene_start
   stop("Invalid candidate coordinates.")
 }
 
+#Read pixy outputs
 pi_df <- read.table(pi_file, header = TRUE) %>%
   filter(no_sites >= 10) %>%
   rename(bin_start = window_pos_1, pi = avg_pi, lineage = pop) %>%
@@ -46,6 +49,7 @@ fst_df <- read.table(fst_file, header = TRUE) %>%
   rename(bin_start = window_pos_1, fst = avg_hudson_fst) %>%
   mutate(bin_end = bin_start + 999L)
 
+#Per-gene scan
 if (same_ploidy_only) {
   fst_df <- fst_df %>%
     filter(!is.na(str_extract(pop1, "_[24]x$")),
@@ -65,21 +69,21 @@ for (i in seq_len(nrow(genes))) {
   win_end <- gend + pad_bp
   excl_start <- gstart - gene_buffer_bp
   excl_end <- gend + gene_buffer_bp
-  
+
   pi_local <- pi_df %>%
     filter(chromosome == chrom, bin_start <= win_end, bin_end >= win_start)
   taj_local <- taj_df %>%
     filter(chromosome == chrom, bin_start <= win_end, bin_end >= win_start)
   fst_local <- fst_df %>%
     filter(chromosome == chrom, bin_start <= win_end, bin_end >= win_start)
-  
+
   pi_gene <- pi_local %>% filter(bin_start <= gend, bin_end >= gstart)
   taj_gene <- taj_local %>% filter(bin_start <= gend, bin_end >= gstart)
   fst_gene <- fst_local %>% filter(bin_start <= gend, bin_end >= gstart)
   pi_bg <- pi_local %>% filter(!(bin_start <= excl_end & bin_end >= excl_start))
   taj_bg <- taj_local %>% filter(!(bin_start <= excl_end & bin_end >= excl_start))
   fst_bg <- fst_local %>% filter(!(bin_start <= excl_end & bin_end >= excl_start))
-  
+
   pi_summary <- pi_gene %>%
     group_by(lineage) %>%
     summarise(n_bins = n(), mean_pi = mean(pi, na.rm = TRUE), .groups = "drop") %>%
@@ -92,7 +96,7 @@ for (i in seq_len(nrow(genes))) {
     group_by(pop1, pop2) %>%
     summarise(n_bins = n(), mean_fst = mean(fst, na.rm = TRUE), .groups = "drop") %>%
     filter(n_bins >= min_windows_gene)
-  
+
   pi_thresholds <- pi_bg %>%
     group_by(lineage) %>%
     summarise(pi_p05 = quantile(pi, p_low, na.rm = TRUE), .groups = "drop")
@@ -102,7 +106,7 @@ for (i in seq_len(nrow(genes))) {
   fst_thresholds <- fst_bg %>%
     group_by(pop1, pop2) %>%
     summarise(fst_p95 = quantile(fst, p_high, na.rm = TRUE), .groups = "drop")
-  
+
   low_pi <- pi_summary %>%
     inner_join(pi_thresholds, by = "lineage") %>%
     filter(mean_pi <= pi_p05) %>%
@@ -114,7 +118,7 @@ for (i in seq_len(nrow(genes))) {
   high_fst <- fst_summary %>%
     inner_join(fst_thresholds, by = c("pop1", "pop2")) %>%
     filter(mean_fst >= fst_p95)
-  
+
   # The absolute-D rule is independent of the minimum-bin requirement.
   taj_abs <- taj_gene %>%
     group_by(lineage) %>%
@@ -125,10 +129,10 @@ for (i in seq_len(nrow(genes))) {
     }, .groups = "drop") %>%
     filter(hit) %>%
     pull(lineage)
-  
+
   low_div <- unique(c(low_pi, low_taj, taj_abs))
   matched_fst <- any(high_fst$pop1 %in% low_div | high_fst$pop2 %in% low_div)
-  
+
   result_rows[[i]] <- tibble(
     gene = genes$gene_name[i], chrom = chrom,
     n_pi_bins_gene = sum(pi_summary$n_bins),
@@ -150,6 +154,7 @@ for (i in seq_len(nrow(genes))) {
 
 results <- bind_rows(result_rows)
 
+#Summary
 summary_table <- results %>%
   summarise(total_genes = n(), sweep_genes = sum(sweep_local),
             perc_sweep = round(100 * sweep_genes / total_genes, 1))
@@ -163,6 +168,7 @@ lineage_counts <- results %>%
   filter(nzchar(low_div_lineages)) %>%
   count(lineage = low_div_lineages, sort = TRUE)
 
+#Write outputs
 write_tsv(results, file.path(out_dir, paste0(ploidy, "_local_sweeps.tsv")))
 write_tsv(summary_table, file.path(out_dir, paste0(ploidy, "_sweep_summary.tsv")))
 write_tsv(signal_counts, file.path(out_dir, paste0(ploidy, "_signal_counts.tsv")))
